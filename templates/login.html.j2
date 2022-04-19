@@ -1,0 +1,38 @@
+
+{% extends "base.html.j2" %}
+
+{% block content %}
+
+    {% with alerts = get_flashed_messages(with_categories=True)%}
+    	{% for category, message in alerts %}
+    		<div class="alert alert-{{ category }}">{{message}}</div>
+    	{% endfor %}
+    {% endwith %}
+
+    <div style="width: 50%; margin: 0 auto;">
+        <h6 class="border-bottom pb-2 mb-0 text-center">Login</h6>
+
+        <form style="margin: 0 auto;" method="POST" class="p-2 justify-content-center border my-2">
+            <div class="my-2">
+                <input 
+                    type="email" 
+                    name="email" 
+                    placeholder="User" 
+                    class="form-control" 
+                    value="{{email}}" 
+                    required formnovalidate="email">
+            </div>
+
+            <div class="my-2">
+                <input 
+                    type="password" 
+                    name="password" 
+                    placeholder="Pass" 
+                    class="form-control" 
+                    value="{{password}}" 
+                    required>
+            </div>
+            <button class="btn btn-success">Login</button>
+        </form>
+    </div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends 'base.html.j2' %}
+
+{% with alerts = get_flashed_messages(with_categories=True)%}
+    {% for category, message in alerts %}
+        <div class="alert alert-{{category}}">{{ message }}</div>
+    {% endfor %}
+{% endwith %}
+
+{% block content %}
+
+	<table class="table table-striped table-hover table-borderless table-responsive">
+		<thead class="thead-default thead-dark bg-dark text-light">
+			<tr>
+				<th scope="col">Módulos</th>
+				<th scope="col">Opções</th>
+			</tr>
+			
+		</thead>
+		<tbody>
+			{% if course %}
+				{% for module in course['course']['modules'] %}
+					<tr>
+						<td>{{ module['name'] }}</td>
+						<td class="col-md-4">
+							<a href="/module?courseId={{ course['course']['id'] }}&moduleId={{ module['id'] }}" 
+								class='btn btn-success' 
+								style='background-color: #4b4cc7; 
+								border-color: #4b4cc7'>
+								Ver aulas
+							</a>
+						</td>
+					</tr>
+				{% endfor %}
+			{% else %}
+				<div class="alert alert-info" role="alert">
+					<h6>Nada encontrado!</h6>
+				</div>
+			{% endif %}
+		</tbody>
+	</table>
+{% endblock %}
