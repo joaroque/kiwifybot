@@ -50,8 +50,8 @@ class Kiwibot:
 		    courses_fetched += 10
 		    courses_list.append(account_courses['courses'])
 
-		with open('aa.json', 'w', encoding='utf-8') as f:
-			json.dump(courses_list, f, ensure_ascii=False, indent=4)
+		# with open('aa.json', 'w', encoding='utf-8') as f:
+		# 	json.dump(courses_list, f, ensure_ascii=False, indent=4)
 		return courses_list
 		
 		#c = courses_list[0]
@@ -82,29 +82,58 @@ class Kiwibot:
 
 
 		path = self.create_dir(course_name, module_name, file_type)
-		file = self.download(file_url, filename, file_type)
-		self.move(file, path)
+		file = self.download(file_url,
+							filename, 
+							file_type,
+							course_name, 
+							module_name)
+		if file_type == 'pdf':
+			self.move(file, path)
+
+
+	def write_json(self, data: str, name: str) -> None:
+		with open(f'{name}.json', 'w', encoding='utf-8') as file:
+			json.dump(data, file, ensure_ascii=False, indent=4)
+
 
 	# Baixar
-	def download(self, url: str, filename: str, file_type) -> None:
+	def download(self, 
+		url: str, 
+		filename: str, 
+		file_type: str, 
+		course_name: str, 
+		module_name: str) -> None:
+
 		url = url.strip()
 		
-		print(run(f"Baixando:"))
-		print(run("Aguarde..."))
-		
 		if file_type == 'pdf':
+			print(run(f"Baixando:"))
+			print(run("Aguarde..."))
+			
 			url = self._s.get(url).json()
 			url = url['url']
 
-		s = Session()
+			s = Session()
 
-		with s.get(url, stream=True) as r:
-			r.raise_for_status()
-			with open(filename, 'wb') as f:
-				for chunk in r.iter_content(chunk_size=8192): 
-					f.write(chunk)
-		print(good("Baixado com sucesso"))
-		return filename
+			with s.get(url, stream=True) as r:
+				r.raise_for_status()
+				with open(filename, 'wb') as f:
+					for chunk in r.iter_content(chunk_size=8192): 
+						f.write(chunk)
+			print(good("Baixado com sucesso"))
+			return filename
+		
+		else:
+			data = {
+				"url": url,
+				"filename": filename,
+				"course_name": course_name,
+				"module_name": module_name
+			}
+
+			self.write_json(data, "info")
+			os.system(f"start cmd /K python downloader.py")
+
 
 	def create_dir(self, course_name: str, module_name: str, file_type: str) -> str:
 		if file_type == 'pdf':
@@ -154,7 +183,7 @@ class Kiwibot:
 
 								if lesson['video']:
 									videoname = lesson['video']['name']
-									video_url = lesson['video']['download_link']
+									video_url = lesson['video']['stream_link']
 
 		if file_type == 'video':
 			return [course_name, module_name, videoname, video_url]

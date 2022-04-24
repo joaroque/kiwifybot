@@ -127,3 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+login.json
+info.json
+Cursos/
+KiwibotV2/
+KiwibotV2.rar
+instalar_ffmpeg.txt
