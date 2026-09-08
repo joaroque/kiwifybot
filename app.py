@@ -1,3 +1,4 @@
+import sys
 import json
 import requests
 
@@ -12,17 +13,28 @@ from flask import (
 	render_template
 	)
 
+if sys.platform == 'win32':
+	try:
+		sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+		sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+	except Exception:
+		pass
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'sdfgh5ehezxs323r'
 
-def read_json(filename: str, path=None) -> str:		
+def read_json(filename: str, path=None):		
 	with open(filename, 'r', encoding='utf-8') as f:
 		data = json.loads(f.read())
 		return data
 
 bot = Kiwibot()
-creds = read_json('login.json')
-bot.login(creds['email'],creds['password'])
+try:
+	creds = read_json('login.json')
+	if creds.get('email') and creds.get('password'):
+		bot.login(creds['email'], creds['password'])
+except Exception as e:
+	print(f"Aviso: Não foi possível realizar login automático via login.json: {e}")
 
 
 @app.route('/', methods=['POST', 'GET'])
@@ -84,11 +96,12 @@ def login():
 
 		try:
 			r = bot.login(email, password)
+			write_json({'email': email, 'password': password}, 'login')
 			return redirect('/')
 
 		except Exception as e:
 			flash('Erro ao fazer login', category='danger')
-			flash(e, category='danger')
+			flash(str(e), category='danger')
 
 	return render_template('login.html.j2')
 

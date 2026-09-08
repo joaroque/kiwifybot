@@ -1,0 +1,5 @@
+Flask>=3.0
+requests>=2.31
+yt-dlp>=2024.1.1
+huepy>=1.2.1
+pathvalidate>=3.0
