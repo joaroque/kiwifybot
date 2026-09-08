@@ -1,11 +1,20 @@
 import os
+import sys
 import json
+import requests
 from requests import Session
 import pickle
 import shutil
 from huepy import *
 
 from pathvalidate import sanitize_filename
+
+if sys.platform == 'win32':
+	try:
+		sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+		sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+	except Exception:
+		pass
 
 
 
@@ -37,26 +46,28 @@ class Kiwibot:
 		
 		return True
 
-	def get_courses(self) -> dict:
-		courses = self._s.get(self.COURSES_URL).json()
-		total_courses = courses['count']
-		courses_fetched = 10
-		courses_list = courses['courses']
-		page_count = 1
+	def logout(self) -> None:
+		self._s = Session()
+		self._s.headers['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.106 Safari/537.36'
+		self._is_logged = False
+
+	def get_courses(self) -> list:
+		res = self._s.get(self.COURSES_URL).json()
+		total_courses = res.get('count', 0)
+		courses_list = res.get('courses', [])
+		courses_fetched = len(courses_list)
+		page_count = 2
 
 		while courses_fetched < total_courses:
-		    account_courses = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses?&page={page_count}").json()
-		    page_count += 1
-		    courses_fetched += 10
-		    courses_list.append(account_courses['courses'])
+			account_courses = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses?&page={page_count}").json()
+			new_courses = account_courses.get('courses', [])
+			if not new_courses:
+				break
+			courses_list.extend(new_courses)
+			courses_fetched += len(new_courses)
+			page_count += 1
 
-		# with open('aa.json', 'w', encoding='utf-8') as f:
-		# 	json.dump(courses_list, f, ensure_ascii=False, indent=4)
 		return courses_list
-		
-		#c = courses_list[0]
-		#infos = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses/{c['id']}").json()
-
 
 	def get_modules(self, module_id: str) -> dict:
 		modules = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses/{module_id}").json()
@@ -75,26 +86,28 @@ class Kiwibot:
 								module_id, 
 								lesson_id, 
 								file_type)
+		if not info:
+			print(bad("Aula ou arquivo não encontrado!"))
+			return
+
 		course_name = self.sanatize(info[0])
 		module_name = self.sanatize(info[1])
 		filename = info[2]
 		file_url = info[3]
 
+		if not file_url:
+			print(bad("Link de download não disponível para esta aula!"))
+			return
 
-		path = self.create_dir(course_name, module_name, file_type)
-		file = self.download(file_url,
-							filename, 
-							file_type,
-							course_name, 
-							module_name)
-		if file_type == 'pdf':
-			self.move(file, path)
+		self.download(file_url,
+					filename, 
+					file_type,
+					course_name, 
+					module_name)
 
-
-	def write_json(self, data: str, name: str) -> None:
+	def write_json(self, data: dict, name: str) -> None:
 		with open(f'{name}.json', 'w', encoding='utf-8') as file:
 			json.dump(data, file, ensure_ascii=False, indent=4)
-
 
 	# Baixar
 	def download(self, 
@@ -107,22 +120,35 @@ class Kiwibot:
 		url = url.strip()
 		
 		if file_type == 'pdf':
-			print(run(f"Baixando:"))
+			print(run(f"Baixando PDF: {filename}"))
 			print(run("Aguarde..."))
-			
-			url = self._s.get(url).json()
-			url = url['url']
 
-			s = Session()
+			dest_dir = self.create_dir(course_name, module_name, 'pdf')
+			dest_file = os.path.join(dest_dir, filename)
 
-			with s.get(url, stream=True) as r:
+			try:
+				r = self._s.get(url, stream=True)
 				r.raise_for_status()
-				with open(filename, 'wb') as f:
-					for chunk in r.iter_content(chunk_size=8192): 
-						f.write(chunk)
-			print(good("Baixado com sucesso"))
-			return filename
-		
+
+				# Caso a API retorne um JSON com a URL de download redirecionada
+				if 'application/json' in r.headers.get('Content-Type', ''):
+					data = r.json()
+					download_url = data.get('url') or data.get('download_url')
+					if download_url:
+						r = requests.get(download_url, stream=True)
+						r.raise_for_status()
+
+				with open(dest_file, 'wb') as f:
+					for chunk in r.iter_content(chunk_size=8192):
+						if chunk:
+							f.write(chunk)
+
+				print(good(f"PDF baixado com sucesso: {dest_file}"))
+				return dest_file
+			except Exception as e:
+				print(bad(f"Erro ao baixar PDF: {e}"))
+				return None
+
 		else:
 			data = {
 				"url": url,
@@ -132,63 +158,70 @@ class Kiwibot:
 			}
 
 			self.write_json(data, "info")
-			os.system(f"start cmd /K python downloader.py")
-
+			python_exe = sys.executable
+			os.system(f'start "Kiwify Downloader" cmd /K ""{python_exe}" downloader.py"')
 
 	def create_dir(self, course_name: str, module_name: str, file_type: str) -> str:
 		if file_type == 'pdf':
-			path = f"Cursos\\{course_name}\\Videos\\{module_name}\\PDFs"
-			os.makedirs(path, exist_ok=True)
-		
-		if file_type == 'video':
-			path = f"Cursos\\{course_name}\\Videos\\{module_name}"
-			os.makedirs(path, exist_ok=True)
-		
+			path = os.path.join("Cursos", course_name, "Videos", module_name, "PDFs")
+		else:
+			path = os.path.join("Cursos", course_name, "Videos", module_name)
+		os.makedirs(path, exist_ok=True)
 		return path
 
-
 	def move(self, file: str, dest: str) -> None:
-		path = f"{dest}\\{file}"
-		
+		path = os.path.join(dest, file)
 		if not os.path.exists(path):
 			shutil.move(file, dest)
 		else:
 			print(bad("O arquivo já existe"))
 
-
 	def extract_info(self, 
 		course_id: str, 
 		module_id: str, 
 		lesson_id: str, 
-		file_type: str) -> None:
-		courses = self.get_courses()
-		for course in courses:
-			if course_id == course['id']:
-				course_name = course['name']
-				
-				modules = self.get_modules(course_id)
-				for module in modules['course']['modules']:
-					if module_id == module['id']:
-						module_name = module['name']
+		file_type: str):
+		modules = self.get_modules(course_id)
+		course_data = modules.get('course', {})
+		course_name = course_data.get('name', 'Curso')
 
-						for lesson in module['lessons']:
-							if lesson_id == lesson['id']:
-								if lesson['files']:
-									file_id = lesson['files'][0]['id']
-									filename = lesson['files'][0]['name']
-									file_url = "https://api.kiwify.com.br/v1/viewer/courses/"
-									file_url += f"{course_id}/files/{file_id}?forceDownload=true"
-									
-									#file_url = lesson['files'][0]['url']
+		for module in course_data.get('modules', []):
+			if module.get('id') == module_id:
+				module_name = module.get('name', 'Modulo')
 
-								if lesson['video']:
-									videoname = lesson['video']['name']
-									video_url = lesson['video']['stream_link']
+				for lesson in module.get('lessons', []):
+					if lesson.get('id') == lesson_id:
+						lesson_title = (lesson.get('title') or '').strip()
 
-		if file_type == 'video':
-			return [course_name, module_name, videoname, video_url]
-		else:
-			return [course_name, module_name, filename, file_url]
+						if file_type == 'video' and lesson.get('video'):
+							video = lesson['video']
+							video_url = (
+								video.get('stream_link_full_url')
+								or video.get('download_link_full_url')
+								or video.get('stream_link')
+								or video.get('download_link')
+								or video.get('url')
+							)
+
+							if video_url and video_url.startswith('/'):
+								video_url = f"https://d3pjuhbfoxhm7c.cloudfront.net{video_url}"
+
+							name = lesson_title or video.get('name') or 'video'
+							name = self.sanatize(name).strip()
+							if not name.lower().endswith(('.mp4', '.mkv', '.mov', '.webm', '.avi')):
+								name = f"{name}.mp4"
+
+							return [course_name, module_name, name, video_url]
+
+						elif file_type == 'pdf' and lesson.get('files'):
+							file_obj = lesson['files'][0]
+							file_name = file_obj.get('name', 'anexo.pdf')
+							filename = self.sanatize(file_name).strip()
+							file_url = file_obj.get('url') or f"https://api.kiwify.com.br/v1/viewer/courses/{course_id}/files/{file_obj['id']}?forceDownload=true"
+							return [course_name, module_name, filename, file_url]
+
+		return None
+
 
 
 
