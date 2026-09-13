@@ -22,7 +22,7 @@
 					<tr>
 						<td>{{ module['name'] }}</td>
 						<td class="col-md-4">
-							<a href="/module?courseId={{ course['course']['id'] }}&moduleId={{ module['id'] }}" 
+							<a href="{{ url_for('module', courseId=course['course']['id'], moduleId=module['id']) }}"
 								class='btn btn-success' 
 								style='background-color: #4b4cc7; 
 								border-color: #4b4cc7'>

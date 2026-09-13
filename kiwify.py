@@ -1,234 +1,286 @@
 import os
-import sys
-import json
+from urllib.parse import urlparse
+
 import requests
-from requests import Session
-import pickle
-import shutil
-from huepy import *
-
+import yt_dlp
 from pathvalidate import sanitize_filename
+from requests import Session
 
-if sys.platform == 'win32':
-	try:
-		sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-		sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-	except Exception:
-		pass
-
+KIWIBOT_ERRORS = (
+    requests.RequestException,
+    yt_dlp.utils.DownloadError,
+    OSError,
+    RuntimeError,
+    ValueError,
+    KeyError,
+)
 
 
 class Kiwibot:
-	
-	LOGIN_URL = "https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=AIzaSyDmOO1YAGt0X35zykOMTlolvsoBkefLKFU"
-	COURSES_URL = "https://api.kiwify.com.br/v1/viewer/courses?&page=1"
-	
-	def __init__(self) -> None:
-		self._s = Session()
-		self._is_logged = False
-		self._s.headers['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.106 Safari/537.36'
+    LOGIN_URL = (
+        "https://www.googleapis.com/identitytoolkit/v3/relyingparty/"
+        "verifyPassword?key=AIzaSyDmOO1YAGt0X35zykOMTlolvsoBkefLKFU"
+    )
+    COURSES_URL = "https://api.kiwify.com.br/v1/viewer/courses"
+    REQUEST_TIMEOUT = (15, 120)
 
-	def sanatize(self, string: str) -> str:
-		string = sanitize_filename(string)
-		return string
+    def __init__(self, output_dir="Cursos"):
+        self.output_dir = output_dir
+        self._s = self._new_session()
+        self._is_logged = False
 
-	def login(self, email: str, pwd: str) -> bool:
-		data = {
-    		'email': f'{email}', 
-    		'password': f'{pwd}', 
-    		'returnSecureToken': True
-		}
-		
-		auth_dict = self._s.post(self.LOGIN_URL, data=data).json()
-		self._s.headers['authorization'] = f"Bearer {auth_dict['idToken']}"
-			
-		self._is_logged = True
-		
-		return True
+    @staticmethod
+    def _new_session():
+        session = Session()
+        session.headers["user-agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+        return session
 
-	def logout(self) -> None:
-		self._s = Session()
-		self._s.headers['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.106 Safari/537.36'
-		self._is_logged = False
+    @property
+    def is_logged(self):
+        return self._is_logged
 
-	def get_courses(self) -> list:
-		res = self._s.get(self.COURSES_URL).json()
-		total_courses = res.get('count', 0)
-		courses_list = res.get('courses', [])
-		courses_fetched = len(courses_list)
-		page_count = 2
+    @staticmethod
+    def sanitize(value, fallback="arquivo"):
+        cleaned = sanitize_filename((value or fallback).strip()).strip()
+        return cleaned or fallback
 
-		while courses_fetched < total_courses:
-			account_courses = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses?&page={page_count}").json()
-			new_courses = account_courses.get('courses', [])
-			if not new_courses:
-				break
-			courses_list.extend(new_courses)
-			courses_fetched += len(new_courses)
-			page_count += 1
+    # Backward-compatible alias for users of the original class.
+    sanatize = sanitize
 
-		return courses_list
+    def login(self, email, password):
+        response = self._s.post(
+            self.LOGIN_URL,
+            data={
+                "email": email,
+                "password": password,
+                "returnSecureToken": True,
+            },
+            timeout=self.REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        token = response.json().get("idToken")
+        if not token:
+            raise RuntimeError("A autenticação não retornou um token")
+        self._s.headers["authorization"] = f"Bearer {token}"
+        self._is_logged = True
+        return True
 
-	def get_modules(self, module_id: str) -> dict:
-		modules = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses/{module_id}").json()
-		return modules
+    def logout(self):
+        self._s.close()
+        self._s = self._new_session()
+        self._is_logged = False
 
-	def get_lessons(self, module_id: str) -> dict:
-		lessons = self._s.get(f"https://api.kiwify.com.br/v1/viewer/courses/{module_id}").json()
-		return lessons
+    def _get_json(self, url):
+        response = self._s.get(url, timeout=self.REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
 
-	def downloader(self, 
-		course_id: str, 
-		module_id: str, 
-		lesson_id: str, 
-		file_type: str) -> None:
-		info = self.extract_info(course_id, 
-								module_id, 
-								lesson_id, 
-								file_type)
-		if not info:
-			print(bad("Aula ou arquivo não encontrado!"))
-			return
+    def get_courses(self):
+        courses = []
+        page = 1
+        total = None
+        while total is None or len(courses) < total:
+            payload = self._get_json(f"{self.COURSES_URL}?page={page}")
+            page_courses = payload.get("courses", [])
+            total = payload.get("count", len(page_courses))
+            if not page_courses:
+                break
+            courses.extend(page_courses)
+            page += 1
+        return courses
 
-		course_name = self.sanatize(info[0])
-		module_name = self.sanatize(info[1])
-		filename = info[2]
-		file_url = info[3]
+    def get_modules(self, course_id):
+        return self._get_json(f"{self.COURSES_URL}/{course_id}")
 
-		if not file_url:
-			print(bad("Link de download não disponível para esta aula!"))
-			return
+    # Preserved for compatibility with callers of the original project.
+    get_lessons = get_modules
 
-		self.download(file_url,
-					filename, 
-					file_type,
-					course_name, 
-					module_name)
+    @staticmethod
+    def _video_url(video):
+        url = (
+            video.get("stream_link_full_url")
+            or video.get("download_link_full_url")
+            or video.get("stream_link")
+            or video.get("download_link")
+            or video.get("url")
+        )
+        if url and url.startswith("/"):
+            return "https://d3pjuhbfoxhm7c.cloudfront.net" + url
+        return url
 
-	def write_json(self, data: dict, name: str) -> None:
-		with open(f'{name}.json', 'w', encoding='utf-8') as file:
-			json.dump(data, file, ensure_ascii=False, indent=4)
+    @staticmethod
+    def _is_kiwify_host(url):
+        host = (urlparse(url).hostname or "").lower()
+        return host == "kiwify.com.br" or host.endswith(".kiwify.com.br")
 
-	# Baixar
-	def download(self, 
-		url: str, 
-		filename: str, 
-		file_type: str, 
-		course_name: str, 
-		module_name: str) -> None:
+    def extract_info(
+        self,
+        course_id,
+        module_id,
+        lesson_id,
+        file_type,
+        file_id=None,
+        course_payload=None,
+    ):
+        payload = course_payload or self.get_modules(course_id)
+        course = payload.get("course", {})
+        for module in course.get("modules", []):
+            if module.get("id") != module_id:
+                continue
+            for lesson in module.get("lessons", []):
+                if lesson.get("id") != lesson_id:
+                    continue
+                common = {
+                    "course_name": self.sanitize(course.get("name"), "Curso"),
+                    "module_name": self.sanitize(module.get("name"), "Modulo"),
+                }
+                if file_type == "video" and lesson.get("video"):
+                    url = self._video_url(lesson["video"])
+                    if not url:
+                        return None
+                    filename = self.sanitize(
+                        lesson.get("title") or lesson["video"].get("name"), "video"
+                    )
+                    if not filename.lower().endswith(
+                        (".mp4", ".mkv", ".mov", ".webm", ".avi")
+                    ):
+                        filename += ".mp4"
+                    return {
+                        **common,
+                        "kind": "video",
+                        "filename": filename,
+                        "url": url,
+                    }
+                if file_type in ("file", "pdf"):
+                    attachment = next(
+                        (
+                            item
+                            for item in lesson.get("files") or []
+                            if file_id is None or item.get("id") == file_id
+                        ),
+                        None,
+                    )
+                    if not attachment:
+                        return None
+                    extension = (attachment.get("extension") or "").lower()
+                    if extension == "pdf":
+                        url = (
+                            f"{self.COURSES_URL}/{course_id}/files/"
+                            f"{attachment['id']}?forceDownload=true"
+                        )
+                    else:
+                        url = attachment.get("url")
+                    if not url:
+                        return None
+                    return {
+                        **common,
+                        "kind": "file",
+                        "filename": self.sanitize(
+                            attachment.get("name"), f"anexo.{extension or 'bin'}"
+                        ),
+                        "url": url,
+                    }
+        return None
 
-		url = url.strip()
-		
-		if file_type == 'pdf':
-			print(run(f"Baixando PDF: {filename}"))
-			print(run("Aguarde..."))
+    def _destination(self, info):
+        category = "Videos" if info["kind"] == "video" else "Anexos"
+        directory = os.path.join(
+            self.output_dir, info["course_name"], category, info["module_name"]
+        )
+        os.makedirs(directory, exist_ok=True)
+        return os.path.join(directory, info["filename"])
 
-			dest_dir = self.create_dir(course_name, module_name, 'pdf')
-			dest_file = os.path.join(dest_dir, filename)
+    def _download_file(self, url, destination):
+        if os.path.isfile(destination) and os.path.getsize(destination) > 0:
+            return "skipped"
+        getter = self._s.get if self._is_kiwify_host(url) else requests.get
+        response = getter(url, stream=True, timeout=self.REQUEST_TIMEOUT)
+        response.raise_for_status()
+        if "application/json" in response.headers.get("Content-Type", ""):
+            payload = response.json()
+            redirected_url = payload.get("url") or payload.get("download_url")
+            response.close()
+            if not redirected_url:
+                raise RuntimeError("A API não retornou uma URL para o anexo")
+            # Never forward Kiwify's bearer token to the storage provider.
+            response = requests.get(
+                redirected_url, stream=True, timeout=self.REQUEST_TIMEOUT
+            )
+            response.raise_for_status()
+        partial = destination + ".part"
+        try:
+            with open(partial, "wb") as output:
+                for chunk in response.iter_content(chunk_size=256 * 1024):
+                    if chunk:
+                        output.write(chunk)
+            os.replace(partial, destination)
+        finally:
+            response.close()
+        return "downloaded"
 
-			try:
-				r = self._s.get(url, stream=True)
-				r.raise_for_status()
+    @staticmethod
+    def _download_video(url, destination):
+        if os.path.isfile(destination) and os.path.getsize(destination) > 0:
+            return "skipped"
+        options = {
+            "outtmpl": destination,
+            "windowsfilenames": True,
+            "continuedl": True,
+            "retries": 10,
+            "fragment_retries": 10,
+            "noplaylist": True,
+            "quiet": True,
+            "noprogress": True,
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            downloader.download([url])
+        return "downloaded"
 
-				# Caso a API retorne um JSON com a URL de download redirecionada
-				if 'application/json' in r.headers.get('Content-Type', ''):
-					data = r.json()
-					download_url = data.get('url') or data.get('download_url')
-					if download_url:
-						r = requests.get(download_url, stream=True)
-						r.raise_for_status()
+    def download(self, info):
+        destination = self._destination(info)
+        if info["kind"] == "video":
+            result = self._download_video(info["url"].strip(), destination)
+        else:
+            result = self._download_file(info["url"].strip(), destination)
+        return result, destination
 
-				with open(dest_file, 'wb') as f:
-					for chunk in r.iter_content(chunk_size=8192):
-						if chunk:
-							f.write(chunk)
+    def downloader(self, course_id, module_id, lesson_id, file_type, file_id=None):
+        info = self.extract_info(
+            course_id, module_id, lesson_id, file_type, file_id=file_id
+        )
+        return self.download(info) if info else None
 
-				print(good(f"PDF baixado com sucesso: {dest_file}"))
-				return dest_file
-			except Exception as e:
-				print(bad(f"Erro ao baixar PDF: {e}"))
-				return None
-
-		else:
-			data = {
-				"url": url,
-				"filename": filename,
-				"course_name": course_name,
-				"module_name": module_name
-			}
-
-			self.write_json(data, "info")
-			python_exe = sys.executable
-			os.system(f'start "Kiwify Downloader" cmd /K ""{python_exe}" downloader.py"')
-
-	def create_dir(self, course_name: str, module_name: str, file_type: str) -> str:
-		if file_type == 'pdf':
-			path = os.path.join("Cursos", course_name, "Videos", module_name, "PDFs")
-		else:
-			path = os.path.join("Cursos", course_name, "Videos", module_name)
-		os.makedirs(path, exist_ok=True)
-		return path
-
-	def move(self, file: str, dest: str) -> None:
-		path = os.path.join(dest, file)
-		if not os.path.exists(path):
-			shutil.move(file, dest)
-		else:
-			print(bad("O arquivo já existe"))
-
-	def extract_info(self, 
-		course_id: str, 
-		module_id: str, 
-		lesson_id: str, 
-		file_type: str):
-		modules = self.get_modules(course_id)
-		course_data = modules.get('course', {})
-		course_name = course_data.get('name', 'Curso')
-
-		for module in course_data.get('modules', []):
-			if module.get('id') == module_id:
-				module_name = module.get('name', 'Modulo')
-
-				for lesson in module.get('lessons', []):
-					if lesson.get('id') == lesson_id:
-						lesson_title = (lesson.get('title') or '').strip()
-
-						if file_type == 'video' and lesson.get('video'):
-							video = lesson['video']
-							video_url = (
-								video.get('stream_link_full_url')
-								or video.get('download_link_full_url')
-								or video.get('stream_link')
-								or video.get('download_link')
-								or video.get('url')
-							)
-
-							if video_url and video_url.startswith('/'):
-								video_url = f"https://d3pjuhbfoxhm7c.cloudfront.net{video_url}"
-
-							name = lesson_title or video.get('name') or 'video'
-							name = self.sanatize(name).strip()
-							if not name.lower().endswith(('.mp4', '.mkv', '.mov', '.webm', '.avi')):
-								name = f"{name}.mp4"
-
-							return [course_name, module_name, name, video_url]
-
-						elif file_type == 'pdf' and lesson.get('files'):
-							file_obj = lesson['files'][0]
-							file_name = file_obj.get('name', 'anexo.pdf')
-							filename = self.sanatize(file_name).strip()
-							file_url = file_obj.get('url') or f"https://api.kiwify.com.br/v1/viewer/courses/{course_id}/files/{file_obj['id']}?forceDownload=true"
-							return [course_name, module_name, filename, file_url]
-
-		return None
-
-
-
-
-# bot = Kiwibot()
-# bot.login("thiagoplrmkt@gmail.com","Cursos1234")
-# bot.get_courses()
-# bot.downloader("0805c38a-9841-4c4a-afe7-7944e2ad89d8", 
-# 			"889addb8-e305-48eb-a8f1-5b124944201c", 
-# 			"22c1362d-ce29-4dd0-92bb-5c14c09d6f85",
-# 			"video")
+    def download_all(self):
+        totals = {"downloaded": 0, "skipped": 0, "failed": 0}
+        for course in self.get_courses():
+            data = self.get_modules(course["id"]).get("course", {})
+            for module in data.get("modules", []):
+                for lesson in module.get("lessons", []):
+                    tasks = []
+                    if lesson.get("video"):
+                        tasks.append(("video", None))
+                    tasks.extend(
+                        ("file", item.get("id")) for item in lesson.get("files") or []
+                    )
+                    for file_type, file_id in tasks:
+                        try:
+                            info = self.extract_info(
+                                course["id"],
+                                module["id"],
+                                lesson["id"],
+                                file_type,
+                                file_id,
+                                course_payload={"course": data},
+                            )
+                            result = self.download(info) if info else None
+                            if result:
+                                status, destination = result
+                                totals[status] += 1
+                                print(f"[{status.upper()}] {destination}", flush=True)
+                        except KIWIBOT_ERRORS as error:
+                            totals["failed"] += 1
+                            print(f"[FAILED] {error}", flush=True)
+        return totals
