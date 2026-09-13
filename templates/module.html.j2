@@ -1,55 +1,45 @@
-{% extends 'base.html.j2' %}
-
-{% with alerts = get_flashed_messages(with_categories=True)%}
-    {% for category, message in alerts %}
-        <div class="alert alert-{{category}}">{{ message }}</div>
-    {% endfor %}
-{% endwith %}
+{% extends "base.html.j2" %}
 
 {% block content %}
-
-	<table class="table table-striped table-hover table-borderless table-responsive">
-		<thead class="thead-default thead-dark bg-dark text-light">
-			<tr>
-				<th scope="col">Aulas</th>
-				<th scope="col">Baixar</th>
-			</tr>
-			
-		</thead>
-		<tbody>
-			{% if course %}
-				{% for module in course['course']['modules'] %}
-					{% if module_id == module['id'] %}
-						{% for lesson in module['lessons'] %}
-							<tr>
-								<td>{{ lesson['title'] }}</td>
-								<td class="col-md-4">
-									{% if lesson['video'] %}
-										<a href="/download?courseId={{ course['course']['id'] }}&moduleId={{ module['id'] }}&lesson_id={{ lesson['id'] }}&type=video" 
-											class='btn btn-success' 
-											style='background-color: #22af6d; 
-											border-color: #22af6d'>
-											Vídeo
-										</a>
-									{% endif %}
-									{% if lesson['files'] %}
-										<a href="/download?courseId={{ course['course']['id'] }}&moduleId={{ module['id'] }}&lesson_id={{ lesson['id'] }}&type=pdf" 
-											class='btn btn-success' 
-											style='background-color: #4b4cc7; 
-											border-color: #4b4cc7'>
-											Anexo PDF
-										</a>
-									{% endif %}
-								</td>
-							</tr>
-						{% endfor %}
-					{% endif %}
-				{% endfor %}
-			{% else %}
-				<div class="alert alert-info" role="alert">
-					<h6>Nada encontrado!</h6>
-				</div>
-			{% endif %}
-		</tbody>
-	</table>
+<table class="table table-striped table-hover table-borderless table-responsive">
+    <thead class="thead-default thead-dark bg-dark text-light">
+        <tr><th scope="col">Aulas</th><th scope="col">Baixar</th></tr>
+    </thead>
+    <tbody>
+    {% if course %}
+        {% for module in course["course"]["modules"] %}
+            {% if module_id == module["id"] %}
+                {% for lesson in module["lessons"] %}
+                <tr>
+                    <td>{{ lesson["title"] }}</td>
+                    <td class="col-md-6">
+                        {% if lesson["video"] %}
+                        <form action="{{ url_for('downloader') }}" method="POST" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="courseId" value="{{ course['course']['id'] }}">
+                            <input type="hidden" name="moduleId" value="{{ module['id'] }}">
+                            <input type="hidden" name="lessonId" value="{{ lesson['id'] }}">
+                            <input type="hidden" name="type" value="video">
+                            <button type="submit" class="btn btn-success">Vídeo</button>
+                        </form>
+                        {% endif %}
+                        {% for file in lesson["files"] or [] %}
+                        <form action="{{ url_for('downloader') }}" method="POST" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="courseId" value="{{ course['course']['id'] }}">
+                            <input type="hidden" name="moduleId" value="{{ module['id'] }}">
+                            <input type="hidden" name="lessonId" value="{{ lesson['id'] }}">
+                            <input type="hidden" name="fileId" value="{{ file['id'] }}">
+                            <input type="hidden" name="type" value="file">
+                            <button type="submit" class="btn btn-primary">{{ file["name"] }}</button>
+                        </form>
+                        {% endfor %}
+                    </td>
+                </tr>
+                {% endfor %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+    </tbody>
+</table>
 {% endblock %}

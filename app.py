@@ -1,119 +1,147 @@
-import sys
-import json
-import requests
-
-from kiwify import Kiwibot
+import os
+import secrets
+import threading
 
 from flask import (
-	Flask,
-	flash, 
-	request, 
-	url_for, 
-	redirect,
-	render_template
-	)
+    Flask,
+    abort,
+    flash,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 
-if sys.platform == 'win32':
-	try:
-		sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-		sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-	except Exception:
-		pass
+from kiwify import KIWIBOT_ERRORS, Kiwibot
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'sdfgh5ehezxs323r'
-
-def read_json(filename: str, path=None):		
-	with open(filename, 'r', encoding='utf-8') as f:
-		data = json.loads(f.read())
-		return data
-
+app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 bot = Kiwibot()
-try:
-	creds = read_json('login.json')
-	if creds.get('email') and creds.get('password'):
-		bot.login(creds['email'], creds['password'])
-except Exception as e:
-	print(f"Aviso: Não foi possível realizar login automático via login.json: {e}")
+bot_lock = threading.Lock()
 
 
-@app.route('/', methods=['POST', 'GET'])
+def csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.context_processor
+def template_state():
+    return {"bot_logged": bot.is_logged}
+
+
+def require_csrf():
+    provided = request.form.get("csrf_token")
+    expected = session.get("csrf_token")
+    if not provided or not expected or not secrets.compare_digest(provided, expected):
+        abort(400)
+
+
+def require_login():
+    return None if bot.is_logged else redirect(url_for("login"))
+
+
+email = os.environ.get("KIWIFY_EMAIL")
+password = os.environ.get("KIWIFY_PASSWORD")
+if email and password:
+    try:
+        bot.login(email, password)
+    except KIWIBOT_ERRORS:
+        print("Aviso: não foi possível realizar o login automático.")
+
+
+@app.route("/")
 def index():
-	if not bot._is_logged: 
-		return "<h1>Erro ao iniciar sessão</h1>"
-	courses = bot.get_courses()
-	return render_template('index.html.j2', courses=courses)
+    redirect_response = require_login()
+    if redirect_response:
+        return redirect_response
+    try:
+        return render_template("index.html.j2", courses=bot.get_courses())
+    except KIWIBOT_ERRORS:
+        flash("Não foi possível consultar os cursos.", "danger")
+        return render_template("index.html.j2", courses=[]), 502
 
 
-def write_json(data, name):
-	name = f'{name}.json'
-	with open(name, 'w', encoding='utf-8') as f:
-		json.dump(data, f, ensure_ascii=False, indent=4)
-
-
-@app.route('/course')
+@app.route("/course")
 def course():
-	course_id = request.args.get('courseId')
+    redirect_response = require_login()
+    if redirect_response:
+        return redirect_response
+    return render_template(
+        "course.html.j2", course=bot.get_modules(request.args.get("courseId", ""))
+    )
 
-	course = bot.get_modules(course_id)
-	return render_template('course.html.j2', course=course)
 
-
-@app.route('/module')
+@app.route("/module")
 def module():
-	course_id = request.args.get('courseId')
-	module_id = request.args.get('moduleId')
+    redirect_response = require_login()
+    if redirect_response:
+        return redirect_response
+    course_id = request.args.get("courseId", "")
+    return render_template(
+        "module.html.j2",
+        course=bot.get_modules(course_id),
+        module_id=request.args.get("moduleId", ""),
+    )
 
-	course = bot.get_modules(course_id)
 
-	return render_template('module.html.j2', 
-		course=course, 
-		module_id=module_id)
-
-
-@app.route('/download')
+@app.post("/download")
 def downloader():
-	course_id = request.args.get('courseId')
-	module_id = request.args.get('moduleId')
-	lesson_id = request.args.get('lesson_id')
-	file_type = request.args.get('type')
-	
-	# pdf or video
-	bot.downloader(course_id, module_id, lesson_id, file_type)
+    require_csrf()
+    redirect_response = require_login()
+    if redirect_response:
+        return redirect_response
+    try:
+        with bot_lock:
+            result = bot.downloader(
+                request.form.get("courseId", ""),
+                request.form.get("moduleId", ""),
+                request.form.get("lessonId", ""),
+                request.form.get("type", ""),
+                request.form.get("fileId") or None,
+            )
+        if result:
+            status, destination = result
+            message = (
+                "Arquivo já existente" if status == "skipped" else "Download concluído"
+            )
+            flash(f"{message}: {destination}", "success")
+        else:
+            flash("Aula ou arquivo não encontrado.", "danger")
+    except KIWIBOT_ERRORS as error:
+        print(f"Erro de download: {error}")
+        flash("O download falhou. Consulte o terminal para mais detalhes.", "danger")
+    return redirect(request.referrer or url_for("index"))
 
-	flash('O download iniciará em breve', category="success")
-	return '<script>document.location.href = document.referrer</script>'
 
-
-@app.route('/login', methods=['POST', 'GET'])
+@app.route("/login", methods=["GET", "POST"])
 def login():
-	if bot._is_logged:
-		return redirect('/')
-
-	if request.method == 'POST':
-		email = request.form.get('email')
-		password  = request.form.get('password')
-
-		try:
-			r = bot.login(email, password)
-			write_json({'email': email, 'password': password}, 'login')
-			return redirect('/')
-
-		except Exception as e:
-			flash('Erro ao fazer login', category='danger')
-			flash(str(e), category='danger')
-
-	return render_template('login.html.j2')
+    if bot.is_logged:
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        require_csrf()
+        try:
+            bot.login(request.form.get("email", ""), request.form.get("password", ""))
+            return redirect(url_for("index"))
+        except KIWIBOT_ERRORS:
+            flash("E-mail ou senha inválidos.", "danger")
+    return render_template("login.html.j2")
 
 
-@app.route('/logout', methods=['GET'])
-def logoutFlask():
-	bot.logout()
-	return redirect('/login')
+@app.post("/logout")
+def logout():
+    require_csrf()
+    bot.logout()
+    session.clear()
+    return redirect(url_for("login"))
 
 
-
-
-
-if __name__ == '__main__':
-	app.run(port=5000, debug=False)
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000, debug=False)
